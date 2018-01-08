@@ -1,0 +1,213 @@
+Function Get-Value4Cell { 
+    Param ( 
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $Cell 
+    ) 
+    Process {
+        if ($Cell.Text){
+            [Double] $Cell.Text
+        }
+        else {
+            0    
+        }        
+    } 
+}
+
+Function Get-Sum4Cells {
+    Param (
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $Sheet, 
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $Row,
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $Column,
+        [Parameter(Mandatory=$False,ValueFromPipeline=$False,ValueFromPipelinebyPropertyName=$False)]
+        $Height =1,
+        [Parameter(Mandatory=$False,ValueFromPipeline=$False,ValueFromPipelinebyPropertyName=$False)]
+        $Width = 1
+    ) 
+    Process {
+        $Sum = 0        
+        $CellNow = $Sheet.Cells.Item($row,$column)        
+        $Sum += $CellNow|Get-Value4Cell
+        $CellHeight = $CellNow|Get-Height4Cell
+        $CellWidth = $CellNow|Get-Width4Cell
+
+        if ($Height -gt $CellHeight){
+            $Sum += Get-Sum4Cells -Sheet $Sheet -Row ($Row + $CellHeight) -Column $Column -Width $Width -Height ($Height - $CellHeight)
+        }
+        
+        if ($Width -gt $CellWidth){
+            $Sum += Get-Sum4Cells -Sheet $Sheet -Row $Row -Column ($Column+$CellWidth) -Width ($Width - $CellWidth) -Height $Height
+        }
+
+        $Sum      
+        
+    } 
+}
+
+Function Get-Height4Cell { 
+    Param ( 
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $Cell 
+    ) 
+    Process {
+        if ($Cell.MergeCells){
+            $cell.MergeArea.Rows.Count
+        }
+        else {
+            1
+        }        
+    } 
+}
+
+Function Get-Width4Cell { 
+    Param ( 
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $Cell 
+    ) 
+    Process {
+        if ($Cell.MergeCells){
+            $cell.MergeArea.Columns.Count
+        }
+        else {
+            1
+        }        
+    } 
+}
+
+
+$excel = new-object -comobject Excel.Application                                                                      
+
+$file = Get-ChildItem 'C:\Users\fzhang\Documents\2017.11月份北京仓出库信息表(1)(1).xls'
+
+$SrcWorkbook = $excel.workbooks.open($file, $null, $true) # open readonly
+
+$SheetName = '经销商月结'
+
+$SrcWorkSheet = $SrcWorkbook.Worksheets|where {$_.name -eq $SheetName}
+
+$head1st = '提货日期'
+
+$HeadByColumn = @{}
+
+$currentrow = 1
+
+$currentcolumn = 1
+
+while ($currentrow -lt $SrcWorkSheet.UsedRange.Rows.Count){
+    $currentcell = $SrcWorkSheet.Cells.Item($currentrow,$currentcolumn)
+    if ($currentcell.Text -eq $head1st){
+        $headrow = $currentrow
+        break
+    }    
+    $currentrow += $currentcell|Get-Height4Cell     
+}
+
+while ($currentcolumn -lt $SrcWorkSheet.UsedRange.Columns.Count){
+    $currentcell = $SrcWorkSheet.Cells.Item($headrow,$currentcolumn)
+    if ($currentcell.Text){
+        if ($currentcell.Text -in $HeadByColumn.Keys) {
+            if ($HeadByColumn[$currentcell.Text] -isnot [System.Collections.ArrayList]){
+                $tmp = $HeadByColumn[$currentcell.Text]
+                $HeadByColumn[$currentcell.Text] = New-Object System.Collections.ArrayList
+                $HeadByColumn[$currentcell.Text].Add($tmp)
+            }
+            $HeadByColumn[$currentcell.Text].Add($currentcolumn)
+            
+        }
+        else {
+            $HeadByColumn.Add($currentcell.Text, $currentcolumn)
+        }
+    }
+    $currentcolumn += $currentcell|Get-Width4Cell    
+}
+
+$HeadByColumn.Keys|foreach {
+    $_
+    $HeadByColumn[$_]
+}
+
+$ColumnID = $HeadByColumn['新泰物流单号']
+
+$ColumnPbyCubic = $HeadByColumn['按方结算']
+$ColumnQbyCubic = $HeadByColumn['核算方数']
+$ColumnMoneyByCubic = ($HeadByColumn['金额']|where {$_ -gt $ColumnPbyCubic -and $_ -gt $ColumnQbyCubic}|Measure-Object -Minimum).Minimum
+
+$ColumnPbyWeight = $HeadByColumn['按重量结算']
+$ColumnQbyWeight = $HeadByColumn['核算重量（公斤）']
+$ColumnMoneyByWeight = ($HeadByColumn['金额']|where {$_ -gt $ColumnPbyWeight -and $_ -gt $ColumnQbyWeight}|Measure-Object -Minimum).Minimum
+
+$ColumnMoneySum = $HeadByColumn['金额合计']
+$ColumnMoneyBase = $HeadByColumn['提/送货费']
+$ColumnInvoice = $HeadByColumn['发票']
+
+Describe "checking $($file.Name) Sheet $SheetName" {
+    
+    $currentrow = $headrow + ($SrcWorkSheet.Cells.Item($headrow,1)|Get-Height4Cell)   
+    
+    while ($currentrow -lt $SrcWorkSheet.UsedRange.Rows.Count){
+
+        $currentID = $SrcWorkSheet.Cells.Item($currentrow,$ColumnID)
+        $Height = $currentID|Get-Height4Cell
+        $Width = $currentID|Get-Width4Cell
+
+        $tmprow = $currentrow
+        while (($tmprow - $currentrow) -lt $Height) {
+            $CurrentQbyCubic = $SrcWorkSheet.Cells.Item($tmprow,$ColumnQbyCubic)
+            $currentCell = $CurrentQbyCubic
+            $Q = $CurrentCell|Get-Value4Cell
+            $P = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $tmprow -Column $ColumnPbyCubic -Height ($currentCell|Get-Height4Cell)
+            $Money = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $tmprow -Column $ColumnMoneyByCubic -Height ($currentCell|Get-Height4Cell)
+            $tmprow += $currentCell|Get-Height4Cell
+            if ((@($P, $Q, $Money)|Get-unique) -eq 0){
+                continue
+            }
+            It "checking Address $($currentCell.address()) ID $($currentCell.text)" {
+                write-host "P $P Q $Q Money $Money"
+                [math]::abs($P * $Q - $Money)|Should belessthan 1
+            }
+        }
+        
+        $tmprow = $currentrow
+        while (($tmprow - $currentrow) -lt $Height) {
+            $CurrentQbyWeight = $SrcWorkSheet.Cells.Item($tmprow,$ColumnQbyWeight)
+            $currentCell = $CurrentQbyWeight
+            $Q = $CurrentCell|Get-Value4Cell
+            $P = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $tmprow -Column $ColumnPbyWeight -Height ($currentCell|Get-Height4Cell)
+            $Money = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $tmprow -Column $ColumnMoneyByWeight -Height ($currentCell|Get-Height4Cell)
+            $tmprow += $currentCell|Get-Height4Cell
+            if ((@($P, $Q, $Money)|Get-unique) -eq 0){
+                continue
+            }
+            It "checking Address $($currentCell.address()) ID $($currentCell.text)" {
+                write-host "P $P Q $Q Money $Money"
+                [math]::abs($P * $Q - $Money)|Should belessthan 1
+            }
+        }
+        
+        $CurrentCell = $currentID
+                    
+        $MoneyByCubic = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $currentrow -Column $ColumnMoneybyCubic -Height ($currentCell|Get-Height4Cell)
+                        
+        $MoneyByWeight = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $currentrow -Column $ColumnMoneyByWeight -Height ($currentCell|Get-Height4Cell)
+
+        $MoneySum = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $currentrow -Column $ColumnMoneySum -Height ($currentCell|Get-Height4Cell)
+
+        $MoneyBase = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $currentrow -Column $ColumnMoneyBase -Height ($currentCell|Get-Height4Cell)
+
+        $MoneyInvoice = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $currentrow -Column $ColumnInvoice -Height ($currentCell|Get-Height4Cell)
+
+        $currentrow += $currentCell|Get-Height4Cell
+
+        if ((@($MoneyByCubic, $MoneyByWeight, $MoneyBase, $MoneySum, $MoneyInvoice)|Get-unique) -eq 0){
+            continue
+        }
+        It "checking Address $($currentCell.address()) ID $($currentCell.text)" {
+            write-host "MoneyByCubic + MoneyByWeight + MoneyBase -MoneySum + MoneyInvoice = $MoneyByCubic + $MoneyByWeight + $MoneyBase -$MoneySum + $MoneyInvoice"
+                        
+            [math]::abs($MoneyByCubic + $MoneyByWeight + $MoneyBase -$MoneySum + $MoneyInvoice)|Should belessthan 1
+        }        
+    }
+}
+
