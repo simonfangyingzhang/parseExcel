@@ -46,6 +46,79 @@ Function Get-Sum4Cells {
     } 
 }
 
+Function Get-QPM4Cells {
+    Param (
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $Sheet,
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $HeadByColumn, 
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $Row,
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $QP,
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $M
+    ) 
+    Process {
+        $delta = 1
+        $ColumnHead = $QP|select -First 1
+        $CurrentCell = $Sheet.Cells.Item($row,$HeadByColumn[$ColumnHead])
+        $QP|foreach{
+            $ColumnHead = $_
+            $delta = $delta *(Get-Sum4Cells -Sheet $Sheet -Row $row -Column $HeadByColumn[$ColumnHead] -Height ($currentCell|Get-Height4Cell))        
+        }        
+        $column4M = ($HeadByColumn[$M]|where {$_ -gt ($QP|foreach {$HeadByColumn[$_]}|Measure-Object -Maximum).Maximum}|Measure-Object -Minimum).Minimum
+        $delta -= Get-Sum4Cells -Sheet $Sheet -Row $row -Column $Column4M -Height ($currentCell|Get-Height4Cell)     
+        [math]::abs($delta)
+    } 
+}
+
+Function Get-PM4Cells {
+    Param (
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $Sheet,
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $HeadByColumn, 
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $Row,
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $P,
+        [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
+        $M
+    ) 
+    Process {
+        $delta = 0
+        $ColumnHead = $P|select -First 1
+        if ($HeadByColumn[$ColumnHead] -is [System.Collections.ArrayList]) {
+            $ColumnHead = $HeadByColumn[$ColumnHead]|Select -First 1            
+        }
+        
+        $CurrentCell = $Sheet.Cells.Item($row,$ColumnHead)
+
+        $P|foreach{
+            $ColumnHead = $_
+            if ($HeadByColumn[$ColumnHead] -is [System.Collections.ArrayList]) {
+                $HeadByColumn[$ColumnHead]|foreach {
+                    Write-Host $_
+                    Write-Host $HeadByColumn[$_]
+                    $delta += Get-Sum4Cells -Sheet $Sheet -Row $row -Column $_ -Height ($currentCell|Get-Height4Cell)
+                }          
+            }
+            else {
+                $delta += Get-Sum4Cells -Sheet $Sheet -Row $row -Column $HeadByColumn[$ColumnHead] -Height ($currentCell|Get-Height4Cell) 
+            }
+        }
+                
+        $M|foreach{
+            $ColumnHead = $_
+            $delta -= Get-Sum4Cells -Sheet $Sheet -Row $row -Column $HeadByColumn[$ColumnHead] -Height ($currentCell|Get-Height4Cell)       
+        }
+
+        [math]::abs($delta)
+    } 
+}
+
+
 Function Get-Height4Cell { 
     Param ( 
         [Parameter(Mandatory=$True,ValueFromPipeline=$True,ValueFromPipelinebyPropertyName=$True)]
@@ -123,24 +196,7 @@ while ($currentcolumn -lt $SrcWorkSheet.UsedRange.Columns.Count){
     $currentcolumn += $currentcell|Get-Width4Cell    
 }
 
-$HeadByColumn.Keys|foreach {
-    $_
-    $HeadByColumn[$_]
-}
-
 $ColumnID = $HeadByColumn['新泰物流单号']
-
-$ColumnPbyCubic = $HeadByColumn['按方结算']
-$ColumnQbyCubic = $HeadByColumn['核算方数']
-$ColumnMoneyByCubic = ($HeadByColumn['金额']|where {$_ -gt $ColumnPbyCubic -and $_ -gt $ColumnQbyCubic}|Measure-Object -Minimum).Minimum
-
-$ColumnPbyWeight = $HeadByColumn['按重量结算']
-$ColumnQbyWeight = $HeadByColumn['核算重量（公斤）']
-$ColumnMoneyByWeight = ($HeadByColumn['金额']|where {$_ -gt $ColumnPbyWeight -and $_ -gt $ColumnQbyWeight}|Measure-Object -Minimum).Minimum
-
-$ColumnMoneySum = $HeadByColumn['金额合计']
-$ColumnMoneyBase = $HeadByColumn['提/送货费']
-$ColumnInvoice = $HeadByColumn['发票']
 
 Describe "checking $($file.Name) Sheet $SheetName" {
     
@@ -151,62 +207,32 @@ Describe "checking $($file.Name) Sheet $SheetName" {
         $currentID = $SrcWorkSheet.Cells.Item($currentrow,$ColumnID)
         $Height = $currentID|Get-Height4Cell
         $Width = $currentID|Get-Width4Cell
-
-        $tmprow = $currentrow
-        while (($tmprow - $currentrow) -lt $Height) {
-            $CurrentQbyCubic = $SrcWorkSheet.Cells.Item($tmprow,$ColumnQbyCubic)
-            $currentCell = $CurrentQbyCubic
-            $Q = $CurrentCell|Get-Value4Cell
-            $P = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $tmprow -Column $ColumnPbyCubic -Height ($currentCell|Get-Height4Cell)
-            $Money = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $tmprow -Column $ColumnMoneyByCubic -Height ($currentCell|Get-Height4Cell)
-            $tmprow += $currentCell|Get-Height4Cell
-            if ((@($P, $Q, $Money)|Get-unique) -eq 0){
-                continue
-            }
-            It "checking Address $($currentCell.address()) ID $($currentCell.text)" {
-                write-host "P $P Q $Q Money $Money"
-                [math]::abs($P * $Q - $Money)|Should belessthan 1
-            }
+        $QPs = @(('按方结算', '核算方数'),('按重量结算','核算重量（公斤）'))
+        $M = '金额'
+        foreach ($QP in $QPs) {
+            $tmprow = $currentrow
+            while (($tmprow - $currentrow) -lt $Height) {
+                $ColumnHead = $QP|select -First 1
+                $CurrentCell = $SrcWorkSheet.Cells.Item($tmprow,$HeadByColumn[$ColumnHead])
+                $delta = Get-QPM4Cells -Sheet $SrcWorkSheet -HeadByColumn $HeadByColumn -Row $tmprow -QP $QP -M $M
+                $tmprow += $currentCell|Get-Height4Cell
+            
+                It "checking Address $($currentCell.address()) ID $($currentCell.text)" {                
+                    $delta|Should belessthan 1
+                }
+            }        
         }
-        
-        $tmprow = $currentrow
-        while (($tmprow - $currentrow) -lt $Height) {
-            $CurrentQbyWeight = $SrcWorkSheet.Cells.Item($tmprow,$ColumnQbyWeight)
-            $currentCell = $CurrentQbyWeight
-            $Q = $CurrentCell|Get-Value4Cell
-            $P = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $tmprow -Column $ColumnPbyWeight -Height ($currentCell|Get-Height4Cell)
-            $Money = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $tmprow -Column $ColumnMoneyByWeight -Height ($currentCell|Get-Height4Cell)
-            $tmprow += $currentCell|Get-Height4Cell
-            if ((@($P, $Q, $Money)|Get-unique) -eq 0){
-                continue
-            }
-            It "checking Address $($currentCell.address()) ID $($currentCell.text)" {
-                write-host "P $P Q $Q Money $Money"
-                [math]::abs($P * $Q - $Money)|Should belessthan 1
-            }
-        }
-        
         $CurrentCell = $currentID
                     
-        $MoneyByCubic = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $currentrow -Column $ColumnMoneybyCubic -Height ($currentCell|Get-Height4Cell)
-                        
-        $MoneyByWeight = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $currentrow -Column $ColumnMoneyByWeight -Height ($currentCell|Get-Height4Cell)
+        $P = @('金额', '提/送货费', '发票')
+        $M = '金额合计'
 
-        $MoneySum = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $currentrow -Column $ColumnMoneySum -Height ($currentCell|Get-Height4Cell)
-
-        $MoneyBase = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $currentrow -Column $ColumnMoneyBase -Height ($currentCell|Get-Height4Cell)
-
-        $MoneyInvoice = Get-Sum4Cells -Sheet $SrcWorkSheet -Row $currentrow -Column $ColumnInvoice -Height ($currentCell|Get-Height4Cell)
-
+        $delta = Get-PM4Cells -Sheet $SrcWorkSheet -HeadByColumn $HeadByColumn -Row $currentrow -P $P -M $M
+        
         $currentrow += $currentCell|Get-Height4Cell
 
-        if ((@($MoneyByCubic, $MoneyByWeight, $MoneyBase, $MoneySum, $MoneyInvoice)|Get-unique) -eq 0){
-            continue
-        }
         It "checking Address $($currentCell.address()) ID $($currentCell.text)" {
-            write-host "MoneyByCubic + MoneyByWeight + MoneyBase -MoneySum + MoneyInvoice = $MoneyByCubic + $MoneyByWeight + $MoneyBase -$MoneySum + $MoneyInvoice"
-                        
-            [math]::abs($MoneyByCubic + $MoneyByWeight + $MoneyBase -$MoneySum + $MoneyInvoice)|Should belessthan 1
+            $delta|Should belessthan 1
         }        
     }
 }
